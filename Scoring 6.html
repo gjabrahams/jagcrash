@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Stableford Scoring</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; max-width: 1000px; margin: auto; }
+    .hidden { display: none; }
+    table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: center; }
+    input, select, button { padding: 6px; font-size: 16px; margin: 5px 0; }
+    .nav-buttons { display: flex; justify-content: space-between; margin-top: 20px; }
+  </style>
+</head>
+<body>
+
+<div id="start-screen">
+  <h1>Stableford Scoring</h1>
+  <label>Select Course:</label>
+  <select id="course-select"></select>
+  <button onclick="loadSelectedCourse()">Load Course</button>
+  <br><label>Number of Players:</label>
+  <select id="player-count">
+    <option value="1">1</option>
+    <option value="2">2</option>
+    <option value="3">3</option>
+    <option value="4" selected>4</option>
+  </select>
+  <br><label>Scoring Mode:</label>
+  <select id="scoring-mode">
+    <option value="individual">Individual</option>
+    <option value="betterball">Betterball</option>
+  </select>
+  <br><button onclick="proceedToNameInput()">Continue</button>
+</div>
+
+<div id="name-screen" class="hidden">
+  <h2>Enter Player Names and Handicaps</h2>
+  <div id="player-inputs"></div>
+  <button onclick="startGame()">Start Game</button>
+</div>
+
+<div id="score-screen" class="hidden">
+  <h2 id="hole-header"></h2>
+  <table>
+    <thead><tr><th>Player</th><th>Shots</th><th>Points</th></tr></thead>
+    <tbody id="score-table-body"></tbody>
+  </table>
+  <div class="nav-buttons">
+    <button onclick="prevHole()">Previous</button>
+    <button onclick="nextHole()">Next</button>
+  </div>
+</div>
+
+<div id="summary-screen" class="hidden">
+  <h2>Final Summary</h2>
+  <table id="summary-table"></table>
+  <button onclick="exportPDF()">Export PDF</button>
+  <button onclick="exportExcel()">Export Excel</button>
+</div>
+
+<script>
+let courses = {
+  "Default Course": {
+    holes: 18,
+    par: Array(18).fill(4),
+    si: Array(18).fill().map((_, i) => (i % 18) + 1)
+  }
+};
+let players = 4, scoringMode = "individual", totalHoles = 18;
+let playerNames = [], handicaps = [], scores = [], parByHole = [], strokeIndexByHole = [];
+let currentHole = 0;
+
+function proceedToNameInput() {
+  const selected = document.getElementById("course-select").value;
+  if (!selected || !courses[selected]) {
+    alert("Please select a course or create one before continuing.");
+    return;
+  }
+  const course = courses[selected];
+  totalHoles = course.holes;
+  parByHole = course.par;
+  strokeIndexByHole = course.si;
+  players = parseInt(document.getElementById("player-count").value);
+  scoringMode = document.getElementById("scoring-mode").value;
+  document.getElementById("start-screen").classList.add("hidden");
+  document.getElementById("name-screen").classList.remove("hidden");
+  updatePlayerInputs();
+}
+
+function renderHole() {
+  document.getElementById("hole-header").textContent = `Hole ${currentHole+1} (Par ${parByHole[currentHole]}, SI ${strokeIndexByHole[currentHole]})`;
+  const body = document.getElementById("score-table-body");
+  body.innerHTML = "";
+  for (let i = 0; i < players; i++) {
+    const s = scores[currentHole][i];
+    body.innerHTML += `<tr>
+      <td>${playerNames[i]}</td>
+      <td><input type="number" value="${s.shots ?? ""}" onchange="updateScore(${i}, this.value)" /></td>
+      <td>${s.points}</td>
+    </tr>`;
+  }
+
+  const headerRow = document.createElement("tr");
+  headerRow.innerHTML = `<th colspan="3">Cumulative Totals</th>`;
+  body.appendChild(headerRow);
+
+  for (let i = 0; i < players; i++) {
+    let totalShots = 0, totalPoints = 0;
+    for (let h = 0; h <= currentHole; h++) {
+      totalShots += scores[h][i].shots || 0;
+      totalPoints += scores[h][i].points || 0;
+    }
+    const row = document.createElement("tr");
+    row.innerHTML = `<td>${playerNames[i]}</td><td>${totalShots}</td><td>${totalPoints}</td>`;
+    body.appendChild(row);
+  }
+
+  if (scoringMode === "betterball" && players >= 4) {
+    const team1 = [0, 1], team2 = [2, 3];
+    const team1Points = Math.max(...team1.map(i => scores[currentHole][i].points));
+    const team2Points = Math.max(...team2.map(i => scores[currentHole][i].points));
+    const row = document.createElement("tr");
+    row.innerHTML = `<td colspan="3"><strong>Betterball Points</strong><br>Team 1 (${playerNames[0]} & ${playerNames[1]}): ${team1Points}<br>Team 2 (${playerNames[2]} & ${playerNames[3]}): ${team2Points}</td>`;
+    body.appendChild(row);
+  }
+}
+
+function updatePlayerInputs() {
+  const container = document.getElementById("player-inputs");
+  container.innerHTML = "";
+  for (let i = 0; i < players; i++) {
+    container.innerHTML += `Player ${i+1}: <input id="pname-${i}" placeholder="Name" /> HCP <input id="phcp-${i}" type="number" value="0" /><br>`;
+  }
+}
+
+function startGame() {
+  playerNames = [], handicaps = [], scores = [];
+  for (let i = 0; i < players; i++) {
+    playerNames.push(document.getElementById(`pname-${i}`).value || `Player ${i+1}`);
+    handicaps.push(parseInt(document.getElementById(`phcp-${i}`).value) || 0);
+  }
+  for (let h = 0; h < totalHoles; h++) {
+    scores[h] = Array(players).fill().map(() => ({ shots: null, points: 0 }));
+  }
+  currentHole = 0;
+  document.getElementById("name-screen").classList.add("hidden");
+  document.getElementById("score-screen").classList.remove("hidden");
+  renderHole();
+}
+
+function updateScore(player, val) {
+  const shots = parseInt(val);
+  const si = strokeIndexByHole[currentHole];
+  const hcp = handicaps[player];
+  const extra = si <= hcp ? 1 : 0;
+  const par = parByHole[currentHole] + extra;
+  const diff = shots - par;
+  let points = 0;
+  if (diff === -3) points = 5;
+  else if (diff === -2) points = 4;
+  else if (diff === -1) points = 3;
+  else if (diff === 0) points = 2;
+  else if (diff === 1) points = 1;
+  scores[currentHole][player] = { shots, points };
+  renderHole();
+}
+
+function nextHole() {
+  if (currentHole < totalHoles - 1) {
+    currentHole++;
+    renderHole();
+  } else {
+    showSummary();
+  }
+}
+
+function prevHole() {
+  if (currentHole > 0) {
+    currentHole--;
+    renderHole();
+  }
+}
+
+function showSummary() {
+  document.getElementById("score-screen").classList.add("hidden");
+  document.getElementById("summary-screen").classList.remove("hidden");
+  const table = document.getElementById("summary-table");
+  table.innerHTML = "<tr><th>Player</th><th>Total Shots</th><th>Total Points</th></tr>";
+  for (let i = 0; i < players; i++) {
+    let shots = 0, points = 0;
+    for (let h = 0; h < totalHoles; h++) {
+      shots += scores[h][i].shots || 0;
+      points += scores[h][i].points || 0;
+    }
+    table.innerHTML += `<tr><td>${playerNames[i]}</td><td>${shots}</td><td>${points}</td></tr>`;
+  }
+}
+
+function exportPDF() {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const rows = playerNames.map((name, i) => {
+    let shots = 0, points = 0;
+    for (let h = 0; h < totalHoles; h++) {
+      shots += scores[h][i].shots || 0;
+      points += scores[h][i].points || 0;
+    }
+    return [name, shots, points];
+  });
+  doc.text("Stableford Final Summary", 14, 20);
+  doc.autoTable({ head: [["Player", "Shots", "Points"]], body: rows, startY: 30 });
+  doc.save("Stableford_Scores.pdf");
+}
+
+function exportExcel() {
+  const wb = XLSX.utils.book_new();
+  const rows = [["Player", "Shots", "Points"]];
+  for (let i = 0; i < players; i++) {
+    let shots = 0, points = 0;
+    for (let h = 0; h < totalHoles; h++) {
+      shots += scores[h][i].shots || 0;
+      points += scores[h][i].points || 0;
+    }
+    rows.push([playerNames[i], shots, points]);
+  }
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  XLSX.utils.book_append_sheet(wb, ws, "Scores");
+  XLSX.writeFile(wb, "Stableford_Scores.xlsx");
+}
+
+function loadCourses() {
+  const select = document.getElementById("course-select");
+  select.innerHTML = Object.keys(courses).map(name => `<option value="${name}">${name}</option>`).join("");
+}
+
+function loadSelectedCourse() {
+  const selected = document.getElementById("course-select").value;
+  if (!selected || !courses[selected]) return;
+  const course = courses[selected];
+  totalHoles = course.holes;
+  parByHole = course.par;
+  strokeIndexByHole = course.si;
+}
+
+window.onload = loadCourses;
+</script>
+</body>
+</html>

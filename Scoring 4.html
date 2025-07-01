@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Stableford Scoring</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  body { font-family: Arial, sans-serif; padding: 20px; max-width: 900px; margin: auto; }
+  h1, h2, h3 { text-align: center; }
+  table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+  th, td { padding: 10px; text-align: center; border: 1px solid #ccc; }
+  input[type="number"], input[type="text"], select { width: 80px; padding: 5px; }
+  .nav-buttons, .export-buttons { display: flex; justify-content: space-between; margin-top: 30px; }
+  .cumulative { margin-top: 20px; font-weight: bold; }
+  .hidden { display: none; }
+  .start-screen, .name-screen, .par-screen, .summary-screen { text-align: center; margin-top: 60px; }
+  button { padding: 10px 30px; margin: 10px; font-size: 16px; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<div id="start-screen" class="start-screen">
+  <h1>Stableford Scoring</h1>
+  <p>Select number of holes:</p>
+  <button onclick="selectHoles(9)">9 Holes</button>
+  <button onclick="selectHoles(18)">18 Holes</button>
+  <p>Select number of players:</p>
+  <select id="player-count" onchange="updatePlayerInputs()">
+    <option value="1">1</option>
+    <option value="2">2</option>
+    <option value="3">3</option>
+    <option value="4" selected>4</option>
+  </select>
+  <p>Select scoring mode:</p>
+  <select id="scoring-mode">
+    <option value="individual" selected>Individual</option>
+    <option value="betterball">Betterball</option>
+  </select>
+</div>
+
+<div id="name-screen" class="name-screen hidden">
+  <h2>Enter Player Names and Handicaps</h2>
+  <div id="player-inputs"></div>
+  <button onclick="goToParScreen()">Next</button>
+</div>
+
+<div id="par-screen" class="par-screen hidden">
+  <h2>Set Par and Stroke Index for Each Hole</h2>
+  <div id="par-inputs"></div>
+  <button onclick="startGame()">Start Game</button>
+</div>
+
+<div id="score-screen" class="hidden">
+  <h2 id="hole-header">Hole 1</h2>
+  <table>
+    <thead><tr><th>Player</th><th>Shots</th><th>Points</th></tr></thead>
+    <tbody id="score-table-body"></tbody>
+  </table>
+  <div class="cumulative">
+    <h3>Cumulative Totals</h3>
+    <table>
+      <thead><tr><th>Player</th><th>Total Shots</th><th>Total Points</th></tr></thead>
+      <tbody id="cumulative-table"></tbody>
+    </table>
+    <div id="betterball-section" class="hidden">
+      <h3>Betterball Team Score (Running Totals)</h3>
+      <table>
+        <thead><tr><th>Hole</th><th>Team A (P1 & P2)</th><th>Team B (P3 & P4)</th></tr></thead>
+        <tbody id="betterball-table"></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="nav-buttons">
+    <button onclick="prevHole()">Previous</button>
+    <button onclick="nextHole()">Next</button>
+  </div>
+</div>
+
+<div id="summary-screen" class="summary-screen hidden">
+  <h2>Final Score Summary</h2>
+  <table>
+    <thead><tr><th>Player</th><th>HCP</th><th>Total Shots</th><th>Total Points</th></tr></thead>
+    <tbody id="summary-table"></tbody>
+  </table>
+
+  <div id="team-summary-container" class="hidden">
+    <h3>Betterball Team Totals</h3>
+    <table id="team-summary-table" style="margin: 0 auto; width: 50%; border-collapse: collapse;">
+      <thead>
+        <tr><th>Team</th><th>Total Points</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <canvas id="charts-canvas" width="700" height="400" style="display: block; margin: 30px auto;"></canvas>
+
+  <div class="export-buttons">
+    <button onclick="exportPDF()">Export to PDF</button>
+    <button onclick="exportExcel()">Export to Excel</button>
+  </div>
+</div>
+
+<script>
+  let totalHoles = 18, players = 4, playerNames = [], handicaps = [], parByHole = [], strokeIndexByHole = [], scores = [], currentHole = 0;
+  let scoringMode = 'individual';
+
+  function selectHoles(holes) {
+    totalHoles = holes;
+    players = parseInt(document.getElementById("player-count").value);
+    scoringMode = document.getElementById("scoring-mode").value;
+    document.getElementById("start-screen").classList.add("hidden");
+    document.getElementById("name-screen").classList.remove("hidden");
+    updatePlayerInputs();
+  }
+
+  function updatePlayerInputs() {
+    const container = document.getElementById("player-inputs");
+    container.innerHTML = "";
+    players = parseInt(document.getElementById("player-count").value);
+    for (let i = 0; i < players; i++) {
+      container.innerHTML += `<input type="text" id="name-${i}" placeholder="Player ${i + 1} Name" required>` +
+                             `<input type="number" id="hcp-${i}" placeholder="HCP" min="0" max="54" required><br><br>`;
+    }
+  }
+
+  function goToParScreen() {
+    playerNames = [];
+    handicaps = [];
+    for (let i = 0; i < players; i++) {
+      const name = document.getElementById(`name-${i}`).value.trim();
+      const hcpVal = parseInt(document.getElementById(`hcp-${i}`).value);
+      if(!name){
+        alert(`Please enter a name for Player ${i+1}`);
+        return;
+      }
+      if(isNaN(hcpVal) || hcpVal < 0 || hcpVal > 54){
+        alert(`Please enter a valid handicap (0-54) for Player ${i+1}`);
+        return;
+      }
+      playerNames.push(name);
+      handicaps.push(hcpVal);
+    }
+    document.getElementById("name-screen").classList.add("hidden");
+    document.getElementById("par-screen").classList.remove("hidden");
+    const parDiv = document.getElementById("par-inputs");
+    parDiv.innerHTML = "";
+    for (let i = 0; i < totalHoles; i++) {
+      parDiv.innerHTML += `
+        <div style="margin-bottom: 10px;">
+          Hole ${i + 1}: 
+          Par <input type="number" id="par-${i}" value="4" min="1" style="width:50px" required>
+          Stroke Index <input type="number" id="si-${i}" value="${(i % 18) + 1}" min="1" max="18" style="width:50px" required>
+        </div>`;
+    }
+  }
+
+  function startGame() {
+    parByHole = [];
+    strokeIndexByHole = [];
+    for (let i = 0; i < totalHoles; i++) {
+      const parVal = parseInt(document.getElementById(`par-${i}`).value);
+      const siVal = parseInt(document.getElementById(`si-${i}`).value);
+      if (isNaN(parVal) || parVal < 1) {
+        alert(`Please enter a valid Par for hole ${i + 1}`);
+        return;
+      }
+      if (isNaN(siVal) || siVal < 1 || siVal > 18) {
+        alert(`Please enter a valid Stroke Index (1-18) for hole ${i + 1}`);
+        return;
+      }
+      parByHole.push(parVal);
+      strokeIndexByHole.push(siVal);
+    }
+
+    scores = Array.from({ length: totalHoles }, () => Array.from({ length: players }, () => ({ shots: null, points: 0 })));
+    currentHole = 0;
+
+    document.getElementById("par-screen").classList.add("hidden");
+    document.getElementById("score-screen").classList.remove("hidden");
+    document.getElementById("betterball-section").classList.toggle("hidden", scoringMode !== "betterball");
+
+    buildScoreTable();
+    renderHole();
+  }
+
+  function buildScoreTable() {
+    const tbody = document.getElementById("score-table-body");
+    tbody.innerHTML = "";
+    for (let i = 0; i < players; i++) {
+      tbody.innerHTML += `<tr>
+        <td>${playerNames[i]}</td>
+        <td><input type="number" min="1" onchange="updateScore(${i})"></td>
+        <td id="score-${i}">0</td>
+      </tr>`;
+    }
+  }
+
+  function strokesReceivedOnHole(playerIndex, holeIndex) {
+    const hcp = handicaps[playerIndex];
+    const si = strokeIndexByHole[holeIndex];
+    if (hcp > 36) return 2;
+    if (hcp > 18) return si <= (hcp - 18) ? 2 : 1;
+    return si <= hcp ? 1 : 0;
+  }
+
+  function getPoints(shots, par, strokesReceived) {
+    if (shots <= 0 || isNaN(shots)) return 0;
+    const adjustedPar = par + strokesReceived;
+    const diff = shots - adjustedPar;
+    if (diff >= 2) return 0;
+    if (diff === 1) return 1;
+    if (diff === 0) return 2;
+    if (diff === -1) return 3;
+    if (diff === -2) return 4;
+    if (diff === -3) return 5;
+    return 6;
+  }
+
+  function updateScore(playerIndex) {
+    const input = document.querySelectorAll("#score-table-body input")[playerIndex];
+    const shots = parseInt(input.value);
+    const strokesReceived = strokesReceivedOnHole(playerIndex, currentHole);
+    const points = getPoints(shots, parByHole[currentHole], strokesReceived);
+    scores[currentHole][playerIndex] = { shots, points };
+    document.getElementById(`score-${playerIndex}`).textContent = points;
+    updateCumulativeTable();
+  }
+
+  function updateCumulativeTable() {
+    const table = document.getElementById("cumulative-table");
+    table.innerHTML = "";
+    for (let i = 0; i < players; i++) {
+      let totalShots = 0, totalPoints = 0;
+      for (let h = 0; h <= currentHole; h++) {
+        totalShots += scores[h][i].shots || 0;
+        totalPoints += scores[h][i].points || 0;
+      }
+      table.innerHTML += `<tr><td>${playerNames[i]}</td><td>${totalShots}</td><td>${totalPoints}</td></tr>`;
+    }
+
+    if (scoringMode === "betterball") {
+      const betterballTable = document.getElementById("betterball-table");
+      betterballTable.innerHTML = "";
+      let runningA = 0, runningB = 0;
+      for (let h = 0; h <= currentHole; h++) {
+        const teamA = Math.max(scores[h][0]?.points || 0, scores[h][1]?.points || 0);
+        const teamB = Math.max(scores[h][2]?.points || 0, scores[h][3]?.points || 0);
+        runningA += teamA;
+        runningB += teamB;
+        betterballTable.innerHTML += `<tr><td>Hole ${h + 1}</td><td>${teamA} (Total: ${runningA})</td><td>${teamB} (Total: ${runningB})</td></tr>`;
+      }
+    }
+  }
+
+  function renderHole() {
+    document.getElementById("hole-header").textContent = `Hole ${currentHole + 1} (Par ${parByHole[currentHole]}, SI ${strokeIndexByHole[currentHole]})`;
+    const inputs = document.querySelectorAll("#score-table-body input");
+    for (let i = 0; i < players; i++) {
+      inputs[i].value = scores[currentHole][i].shots ?? '';
+      document.getElementById(`score-${i}`).textContent = scores[currentHole][i].points ?? 0;
+    }
+    updateCumulativeTable();
+  }
+
+  function prevHole() {
+    if (currentHole > 0) {
+      currentHole--;
+      renderHole();
+    }
+  }
+
+  function nextHole() {
+    if (currentHole < totalHoles - 1) {
+      currentHole++;
+      renderHole();
+    } else {
+      document.getElementById("score-screen").classList.add("hidden");
+      document.getElementById("summary-screen").classList.remove("hidden");
+      renderSummary();
+    }
+  }
+
+  function renderSummary() {
+    const table = document.getElementById("summary-table");
+    table.innerHTML = "";
+    let teamAPoints = 0;
+    let teamBPoints = 0;
+    const playerPoints = [];
+
+    for (let i = 0; i < players; i++) {
+      let totalShots = 0, totalPoints = 0;
+      for (let h = 0; h < totalHoles; h++) {
+        totalShots += scores[h][i].shots || 0;
+        totalPoints += scores[h][i].points || 0;
+      }
+      playerPoints.push({name: playerNames[i], points: totalPoints});
+      table.innerHTML += `<tr>
+        <td>${playerNames[i]}</td>
+        <td>${handicaps[i]}</td>
+        <td>${totalShots}</td>
+        <td>${totalPoints}</td>
+      </tr>`;
+      if (i === 0 || i === 1) teamAPoints += totalPoints;
+      else if (i === 2 || i === 3) teamBPoints += totalPoints;
+    }
+
+    const teamSummaryContainer = document.getElementById("team-summary-container");
+    if (scoringMode === "betterball") {
+      teamSummaryContainer.classList.remove("hidden");
+      const teamTableBody = document.querySelector("#team-summary-table tbody");
+      teamTableBody.innerHTML = `
+        <tr><td>Team A (P1 & P2)</td><td>${teamAPoints}</td></tr>
+        <tr><td>Team B (P3 & P4)</td><td>${teamBPoints}</td></tr>`;
+    } else {
+      teamSummaryContainer.classList.add("hidden");
+    }
+
+    drawCharts(playerPoints, teamAPoints, teamBPoints);
+  }
+
+  function drawCharts(playerPoints, teamAPoints, teamBPoints) {
+    const ctx = document.getElementById('charts-canvas').getContext('2d');
+    if (window.scoreChart) window.scoreChart.destroy();
+
+    const labels = playerPoints.map(p => p.name);
+    const dataPoints = playerPoints.map(p => p.points);
+    let datasets = [{
+      label: 'Total Points',
+      data: dataPoints,
+      backgroundColor: ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2'].slice(0, players)
+    }];
+
+    if (scoringMode === "betterball") {
+      labels.push('Team A', 'Team B');
+      datasets[0].data = dataPoints.concat([teamAPoints, teamBPoints]);
+      datasets[0].backgroundColor = datasets[0].backgroundColor.concat(['#59a14f', '#edc949']);
+    }
+
+    window.scoreChart = new Chart(ctx, {
+      type: 'bar',
+      data: { labels, datasets },
+      options: {
+        responsive: true,
+        scales: { y: { beginAtZero: true, precision: 0 }},
+        plugins: {
+          legend: { display: false },
+          title: { display: true, text: 'Player and Team Total Points' }
+        }
+      }
+    });
+  }
+
+  function exportExcel() {
+    const wb = XLSX.utils.book_new();
+    const wsData = [["Player", "HCP", "Total Shots", "Total Points"]];
+    for (let i = 0; i < players; i++) {
+      let totalShots = 0, totalPoints = 0;
+      for (let h = 0; h < totalHoles; h++) {
+        totalShots += scores[h][i].shots || 0;
+        totalPoints += scores[h][i].points || 0;
+      }
+      wsData.push([playerNames[i], handicaps[i], totalShots, totalPoints]);
+    }
+
+    if (scoringMode === "betterball") {
+      const teamAPoints = scores.reduce((sum, hole) => sum + Math.max(hole[0]?.points||0, hole[1]?.points||0), 0);
+      const teamBPoints = scores.reduce((sum, hole) => sum + Math.max(hole[2]?.points||0, hole[3]?.points||0), 0);
+      wsData.push([]);
+      wsData.push(["Team A (P1 & P2)", "", "", teamAPoints]);
+      wsData.push(["Team B (P3 & P4)", "", "", teamBPoints]);
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    XLSX.utils.book_append_sheet(wb, ws, "Scores");
+    XLSX.writeFile(wb, "Stableford_Scores.xlsx");
+  }
+
+  function exportPDF() {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.setFontSize(14);
+    doc.text("Stableford Final Score Summary", 14, 20);
+
+    const columns = ["Player", "HCP", "Total Shots", "Total Points"];
+    const rows = [];
+    for(let i=0; i<players; i++){
+      let totalShots = 0, totalPoints = 0;
+      for(let h=0; h<totalHoles; h++){
+        totalShots += scores[h][i].shots || 0;
+        totalPoints += scores[h][i].points || 0;
+      }
+      rows.push([playerNames[i], handicaps[i].toString(), totalShots.toString(), totalPoints.toString()]);
+    }
+
+    doc.autoTable({
+      head: [columns],
+      body: rows,
+      startY: 30,
+      styles: { halign: 'center' }
+    });
+
+    if(scoringMode === "betterball"){
+      const teamAPoints = scores.reduce((sum, hole) => sum + Math.max(hole[0]?.points||0, hole[1]?.points||0), 0);
+      const teamBPoints = scores.reduce((sum, hole) => sum + Math.max(hole[2]?.points||0, hole[3]?.points||0), 0);
+
+      doc.text("Betterball Team Totals", 14, doc.lastAutoTable.finalY + 20);
+      doc.autoTable({
+        head: [["Team", "Total Points"]],
+        body: [
+          ["Team A (P1 & P2)", teamAPoints.toString()],
+          ["Team B (P3 & P4)", teamBPoints.toString()]
+        ],
+        startY: doc.lastAutoTable.finalY + 25,
+        styles: { halign: 'center' }
+      });
+    }
+
+    doc.save("Stableford_Scores.pdf");
+  }
+</script>
+
+</body>
+</html>
